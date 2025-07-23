@@ -56,23 +56,28 @@ MeetToText/
      ```
 4. **Ensure ffmpeg is installed and in your PATH.**
 
+
 ## Usage
 
 From the project root, run:
 
 ```sh
-python main.py <input_file> [--model whisper-1] [--timeout 60] [--max-retries 4]
+python main.py <input_file> [--model whisper-1] [--format meeting] [--timeout 60] [--max-retries 4]
 ```
 
 - `<input_file>`: Path to your audio or video file (e.g., `.m4a`, `.wav`, `.mkv`, etc.)
 - `--model`: (Optional) STT model to use (default: `whisper-1`)
+- `--format`: (Optional) Type of summary to generate (default: `meeting`). Options:
+  - `meeting`: Executive summary & action items (for meetings)
+  - `lecture`: Clean, well-written rewrite of a talk or lecture
+  - `qa`: Extracts Q&A pairs and final suggestions from Q&A sessions
 - `--timeout`: (Optional) Per-request timeout in seconds (default: 60)
 - `--max-retries`: (Optional) Number of retries on transient errors (default: 4)
 
 ### Example
 
 ```sh
-python main.py data/audio_files/intervista_santroni07072025.m4a
+python main.py data/audio_files/intervista_santroni07072025.m4a --format lecture
 ```
 
 The transcript and summary will be saved as a DOCX file in `data/transcripts/`.
