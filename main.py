@@ -288,7 +288,7 @@ def summarise(
         raise ValueError(f"Unknown summary mode: {mode}")
 
     user_msg = f"transcript:\n {text}"
-    temper = 1 if model == "o4-mini-2025-04-16" else 0.0
+    temper = 1 if model == "o4-mini" else 0.0
 
     print("⏳ Generazione del riepilogo …")
     res = client.chat.completions.create(
