@@ -39,6 +39,10 @@ from imageio_ffmpeg import get_ffmpeg_exe
 from openai import OpenAI, APIConnectionError, InternalServerError
 import httpx
 
+import os                   
+from dotenv import load_dotenv  
+load_dotenv()
+
 AUDIO_RATE = 16_000  # Hz
 MAX_UPLOAD_MB = 10  # Hard‑limit per OpenAI docs (≈ 25 MB per request)
 _BYTES_PER_SEC = AUDIO_RATE * 2  # 16‑bit mono → 2 bytes per sample
@@ -192,7 +196,8 @@ def transcribe_chunk(
     timeout_s: float,
     max_retries: int,
 ) -> Dict[str, Any]:
-    client = OpenAI(timeout=timeout_s)
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"),
+                    timeout=timeout_s)
     fmt = _response_format_for(model)
     print(f"⏳ Transcribing {wav.name} with {model} … (format: {fmt})")
 
@@ -298,53 +303,70 @@ def summarise(
     )
     return res.choices[0].message.content.strip()
 
-# -----------------------------------------------------------------------------
-# DOCX writer
-# -----------------------------------------------------------------------------
-
-def save_docx(transcript: str, summary: str, dst: Path) -> None:
+# ──────────────────────────────────────────────────────────────────────────────
+# DOCX writers
+# ──────────────────────────────────────────────────────────────────────────────
+def save_docx(transcript: str, summary: str | None, dst: Path) -> None:
+    """Write transcript and (optionally) a summary into *dst*."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     doc = Document()
-    doc.add_heading("Executive Summary & Action Items" if "### 📝" in summary else "Summary", level=1)
-    for line in summary.splitlines():
-        doc.add_paragraph(line)
-    doc.add_page_break()
-    doc.add_heading("Meeting Transcript" if "[00:" in transcript else "Transcript", level=1)
-    for line in transcript.splitlines():
-        if line.strip():
-            doc.add_paragraph(line)
-
+    if summary:                                               # summary first
+        doc.add_heading("Summary", level=1)
+        for ln in summary.splitlines():
+            doc.add_paragraph(ln)
+        doc.add_page_break()
+    doc.add_heading("Transcript", level=1)
+    for ln in transcript.splitlines():
+        if ln.strip():
+            doc.add_paragraph(ln)
     doc.save(dst)
 
-# -----------------------------------------------------------------------------
-# Orchestrator
-# -----------------------------------------------------------------------------
+def summarise_docx_file(
+docx_path: str, *, mode: str, summarize_model: str, timeout_s: float
+) -> None:
+    """Prefix *docx_path* with a fresh summary (in‑place)."""
+    src = Path(docx_path)
+    if not src.exists():
+        sys.exit(f"❌ DOCX not found: {src}")
+    tmp_out = src.with_suffix(".tmp.docx")
 
+    orig = Document(src)
+    full_text = "\n".join(p.text for p in orig.paragraphs)
+    summary = summarise(full_text, mode=mode, model=summarize_model, timeout_s=timeout_s)
+
+    new_doc = Document()
+    new_doc.add_heading("Summary", level=1)
+    for ln in summary.splitlines():
+        new_doc.add_paragraph(ln)
+    new_doc.add_page_break()
+    # copy original text (formatting lost but minimal edit as requested)
+    for p in orig.paragraphs:
+        new_doc.add_paragraph(p.text)
+    new_doc.save(tmp_out)
+    shutil.move(tmp_out, src)        # overwrite atomically
+    print(f"📄 Summary inserted: {src.absolute()}")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Orchestrator
+# ──────────────────────────────────────────────────────────────────────────────
 def transcribe_file(
-    input_path: str,
-    *,
-    stt_model: str,
-    mode: str,
-    timeout_s: float,
-    max_retries: int,
+input_path: str, *, stt_model: str, summarize_model: str, mode: str,
+    timeout_s: float, max_retries: int, include_summary: bool
 ) -> None:
     load_dotenv()
     src = Path(input_path)
     if not src.exists():
         sys.exit(f"❌ File not found: {src}")
 
-    # Setup folders
     transcripts_dir = Path("./data/transcripts")
     audio_dir = Path("./data/audio_files")
     transcripts_dir.mkdir(parents=True, exist_ok=True)
     audio_dir.mkdir(parents=True, exist_ok=True)
 
-    # Derive paths
-    output_docx_path = transcripts_dir / src.with_suffix(".docx").name
-    archive_path = audio_dir / src.name
-    if src.resolve() != archive_path.resolve():
+    dst_docx = transcripts_dir / src.with_suffix(".docx").name
+    if src.suffix.lower() != ".wav":             # archive original media
         try:
-            shutil.copy2(src, archive_path)
+            shutil.copy2(src, audio_dir / src.name)
         except Exception as e:
             print(f"⚠️  Unable to archive original media: {e}")
 
@@ -352,74 +374,78 @@ def transcribe_file(
         td_path = Path(td)
         wav_path = td_path / "full.wav"
         extract_audio(src, wav_path)
-        chunk_dir = td_path / "chunks"
-        chunks = chunk_audio(wav_path, chunk_dir)
+        chunks = chunk_audio(wav_path, td_path / "chunks")
 
-        plain_parts: List[str] = []
-        timestamped_lines: List[str] = []
+        plain_parts, timestamped_lines = [], []
         time_offset = 0.0
-
         for idx, cp in enumerate(chunks, 1):
-            print(f"— Chunk {idx}/{len(chunks)} ({cp.stat().st_size / 1_048_576:.1f} MB)")
-            stt_resp = transcribe_chunk(cp, model=stt_model, timeout_s=timeout_s, max_retries=max_retries)
-            plain_parts.append(stt_resp["text"])
-            segments = stt_resp.get("segments", [])
-            if segments:
-                timestamped_lines.extend(paragraphs_from_segments(segments, time_offset=time_offset))
-                time_offset += segments[-1].get("end", 0.0)
+            print(f"— Chunk {idx}/{len(chunks)} ({cp.stat().st_size/1_048_576:.1f} MB)")
+            stt = transcribe_chunk(cp, model=stt_model,
+                                   timeout_s=timeout_s, max_retries=max_retries)
+            plain_parts.append(stt["text"])
+            segs = stt.get("segments", [])
+            if segs:
+                timestamped_lines += paragraphs_from_segments(segs, time_offset=time_offset)
+                time_offset += segs[-1].get("end", 0.0)
             else:
-                ts = format_timestamp(time_offset)
-                timestamped_lines.append(f"[{ts}] {stt_resp['text'].strip()}")
+                timestamped_lines.append(f"[{format_timestamp(time_offset)}] {stt['text'].strip()}")
                 time_offset += cp.stat().st_size / _BYTES_PER_SEC
 
-        full_transcript = "\n".join(plain_parts)
-        final_transcript = "\n".join(timestamped_lines)
+    transcript_txt = "\n".join(timestamped_lines)
+    summary_txt = (
+        summarise("\n".join(plain_parts), mode=mode, model=summarize_model, timeout_s=timeout_s)
+        if include_summary else None
+    )
+    save_docx(transcript_txt, summary_txt, dst_docx)
+    print(f"📄 Transcript saved: {dst_docx.absolute()}")
 
-    summary_text = summarise(full_transcript, mode=mode, timeout_s=timeout_s)
-    save_docx(final_transcript, summary_text, output_docx_path)
-
-    print(f"\n📄 Transcript saved: {output_docx_path.absolute()}")
-
-# -----------------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────────────────────
 # CLI
-# -----------------------------------------------------------------------------
-
+# ──────────────────────────────────────────────────────────────────────────────
 def parse_args():
-    p = argparse.ArgumentParser(
-        description="Transcribe a media file → DOCX (chunk‑safe + paragraph timestamps + retries)"
-    )
-    p.add_argument("input_file", help="Video or audio file (any format ffmpeg supports)")
-    p.add_argument(
-        "--model",
-        default="whisper-1",
-        help="STT model for transcription (default: whisper-1)",
-    )
-    p.add_argument(
-        "--format",
-        choices=["meeting", "lecture", "qa"],
-        default="meeting",
-        help="Type of summary to generate: meeting (executive summary), lecture (cleaned rewrite), or qa (Q&A extraction)",
-    )
-    p.add_argument(
-        "--timeout",
-        type=float,
-        default=60,
-        help="Per-request timeout in seconds",
-    )
-    p.add_argument(
-        "--max-retries",
-        type=int,
-        default=4,
-        help="Number of retries on transient errors",
-    )
+    p = argparse.ArgumentParser(description="Audio / video → DOCX (or DOCX → add summary)")
+    p.add_argument("input_file", help="Input media or DOCX file")
+    p.add_argument("--task", choices=["full", "transcript", "summarize"],
+                   default="full",
+                   help="full (default): summary+transcript | "
+                        "transcript: transcript‑only | summarize: add summary to DOCX")
+    p.add_argument("--model", default="whisper-1",
+                   help="STT model (for audio tasks, default: whisper-1)")
+    p.add_argument("--summarize-model", default="o4-mini",
+                   help="Summarization model (default: o4-mini)")
+    p.add_argument("--format", choices=["meeting", "lecture", "qa"],
+                   default="meeting",
+                   help="Summary style (meeting, lecture, qa)")
+    p.add_argument("--timeout", type=float, default=60,
+                   help="Per‑request timeout (s)")
+    p.add_argument("--max-retries", type=int, default=4,
+                   help="Retries on transient errors")
     return p.parse_args()
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Main
+# ──────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     args = parse_args()
-    transcribe_file(
-        input_path=args.input_file,
-        stt_model=args.model,
-        mode=args.format,
-        timeout_s=args.timeout,
-        max_retries=args.max_retries,
-    )
+
+    if args.task == "summarize":
+        if Path(args.input_file).suffix.lower() != ".docx":
+            sys.exit("❌ --task summarize expects a .docx file as input.")
+        summarise_docx_file(
+            args.input_file,
+            mode=args.format,
+            summarize_model=args.summarize_model,
+            timeout_s=args.timeout
+        )
+
+    else:  # audio/video tasks
+        include_summary = args.task == "full"
+        transcribe_file(
+            input_path=args.input_file,
+            stt_model=args.model,
+            summarize_model=args.summarize_model,
+            mode=args.format,
+            timeout_s=args.timeout,
+            max_retries=args.max_retries,
+            include_summary=include_summary,
+        )
