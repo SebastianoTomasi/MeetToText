@@ -256,8 +256,7 @@ def summarise(
             "Sei un Revisore Accademico e Redattore Professionista esperto nella trasformazione di trascrizioni orali in testi scritti di elevate qualità. "
             "Quando ricevi una trascrizione di lezione o talk, procedi così:\n"
             "1. (Hidden) Analizza passo‑passo la struttura e i contenuti con ragionamento interno per organizzare logicamente l’informazione.\n"
-            "2. Correggi grammatica, sintassi e punteggiatura senza alterare il significato originale.\n"
-            "3. Struttura il testo in sezioni distinte con titoli descrittivi e paragrafi scorrevoli. Riporta tutte le domande e risposte nel testo rielaborato.\n"
+            "2. Struttura il testo in sezioni distinte con titoli descrittivi e paragrafi scorrevoli.\n"
             "Se riscontri ambiguità, contrassegna l’area con “[DA CHIARIRE]”."
             )
 
@@ -275,12 +274,12 @@ def summarise(
     elif mode == "qa":
         system_msg = (
             "Agisci come stenografo e facilitatore di sessioni Q&A. "
-            "Devi estrarre ogni domanda, la relativa risposta, e riepilogare i suggerimenti finali."
+            "Devi estrarre ogni domanda, la relativa risposta solo se presente, e riepilogare i suggerimenti finali."
         )
         instructions = (
             "Analizza (nascosto) e poi produci SOLO il testo:\n\n"
             "DOMANDE E RISPOSTE\n"
-            "Q: <domanda 1>\nA: <risposta 1>\n\n[… altre Q/A …]\n\n"
+            "Q: <domanda 1>\nA: <risposta 1 (se presente)>\n\n[… altre Q/A …]\n\n"
             "SUGGERIMENTI EMERSI\n"
             "- <suggerimento 1>\n- …"
         )
