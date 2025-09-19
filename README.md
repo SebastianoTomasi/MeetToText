@@ -90,7 +90,7 @@ python main.py <input_file> [--task {full|transcript|summarize}] [--model {whisp
 ### Example
 
 ```powershell
-python main.py data/audio_files/interview.m4a --task full --model whisper-1 --format lecture
+python main.py data/audio_files/work_meeting.m4a --format meeting
 ```
 
 The transcript and summary will be saved as a DOCX file in `data/transcripts/`.
