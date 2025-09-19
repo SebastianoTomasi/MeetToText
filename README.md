@@ -48,14 +48,14 @@ MeetToText/
 2. **Install dependencies:**
    - With Poetry:
      ```powershell
-     poetry install
+     poetry install --no-root
      ```
    - Or with pip:
      ```powershell
      pip install -r requirements.txt
      ```
 3. **Set up your OpenAI API key:**
-   - Create a `.env` file in the project root:
+   - Create a `.env` file (or rename the example.env) in the project root containing:
      ```
      OPENAI_API_KEY=your-api-key-here
      ```
@@ -90,7 +90,7 @@ python main.py <input_file> [--task {full|transcript|summarize}] [--model {whisp
 ### Example
 
 ```powershell
-python main.py data/audio_files/intervista_santroni07072025.m4a --task full --model whisper-1 --format lecture
+python main.py data/audio_files/interview.m4a --task full --model whisper-1 --format lecture
 ```
 
 The transcript and summary will be saved as a DOCX file in `data/transcripts/`.
