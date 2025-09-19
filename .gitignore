@@ -1,5 +1,2 @@
 # Ignore environment files
-/.env
-
-# Ignore data directory at repo root
-/data/
+.env
