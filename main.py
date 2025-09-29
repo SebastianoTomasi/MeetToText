@@ -224,7 +224,7 @@ def summarise(
     text: str,
     *,
     mode: str = "meeting",  # {meeting|lecture|qa}
-    model: str ="o4-mini-2025-04-16",
+    model: str ="gpt-5-2025-08-07", #"o4-mini-2025-04-16",
     timeout_s: float = 60.0,
 ) -> str:
     """Generate a structured summary according to *mode*.

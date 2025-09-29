@@ -90,7 +90,7 @@ python main.py <input_file> [--task {full|transcript|summarize}] [--model {whisp
 ### Example
 
 ```powershell
-python main.py data/audio_files/work_meeting.m4a --format meeting
+python main.py .\data\audio_files\work_meeting.wav --format meeting
 ```
 
 The transcript and summary will be saved as a DOCX file in `data/transcripts/`.
