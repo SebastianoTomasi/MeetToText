@@ -17,10 +17,10 @@ Change log (rev F‑prompt‑selector)
 • **Updated folder structure**: the original media file is copied to
   `./data/audio_files/` for archival, and the generated DOCX transcript is
   saved to `./data/transcripts/`.
-• **Summary model switched**: summarisation now defaults to `o4-mini`, per
-  OpenAI’s docs: https://platform.openai.com/docs/models/o4-mini
-• **Chat completion params updated**: using `max_completion_tokens` instead
-  of `max_tokens` for `o4-mini` compatibility.
+• **Summary model switched**: summarisation now defaults to `gpt-5-mini`.
+  `gpt-5.2` can be used as a higher-quality alternative.
+• **Chat completion params updated**: using `max_completion_tokens` for
+  compatibility with current reasoning model families.
 """
 
 from __future__ import annotations
@@ -58,12 +58,12 @@ CHUNK_SECONDS = max(1, (MAX_UPLOAD_MB * 1024 ** 2) // _BYTES_PER_SEC)  # ≈ 78
 # Only the models that really return segment‑level timestamps stay here.
 SEGMENT_MODELS: set[str] = {
     "whisper-1",
-    "gpt-4o-mini-transcribe",
-    }
+}
 
 # Models that *must* use plain "json" even though we might want segments.
 _JSON_ONLY_MODELS: set[str] = {
     "gpt-4o-transcribe",          # CLI flag you pass
+    "gpt-4o-mini-transcribe",
     "gpt-4o-transcribe-api-ev3",  # actual name seen by the API
 }
 
@@ -128,8 +128,10 @@ def extract_audio(src: Path, wav_out: Path) -> Path:
     ffmpeg = get_ffmpeg_exe()
     cmd = [
         ffmpeg,
+        # Some MP3s contain recoverable bad frames; avoid noisy stderr when
+        # ffmpeg can still decode and produce a valid WAV.
         "-loglevel",
-        "error",
+        "fatal",
         "-y",
         "-i",
         str(src),
@@ -182,7 +184,7 @@ def _with_retries(fn, *, max_retries: int, backoff: float = 2.0, exc_types: tupl
             if attempt == max_retries:
                 raise
             wait = backoff ** (attempt - 1)
-            print(f"⚠️ {e.__class__.__name__}: {e} - retry {attempt}/{max_retries - 1} in {wait:.1f}s …")
+            print(f"WARNING {e.__class__.__name__}: {e} - retry {attempt}/{max_retries - 1} in {wait:.1f}s ...")
             time.sleep(wait)
 
 # -----------------------------------------------------------------------------
@@ -199,7 +201,7 @@ def transcribe_chunk(
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"),
                     timeout=timeout_s)
     fmt = _response_format_for(model)
-    print(f"⏳ Transcribing {wav.name} with {model} … (format: {fmt})")
+    print(f"Transcribing {wav.name} with {model} ... (format: {fmt})")
 
     def _call():
         with wav.open("rb") as fh:
@@ -224,7 +226,7 @@ def summarise(
     text: str,
     *,
     mode: str = "meeting",  # {meeting|lecture|qa}
-    model: str ="gpt-5-2025-08-07", #"o4-mini-2025-04-16",
+    model: str = "gpt-5-mini",
     timeout_s: float = 60.0,
 ) -> str:
     """Generate a structured summary according to *mode*.
@@ -287,19 +289,21 @@ def summarise(
         raise ValueError(f"Unknown summary mode: {mode}")
 
     user_msg = f"transcript:\n {text}"
-    temper = 1 if model == "o4-mini" else 0.0
-
-    print("⏳ Generazione del riepilogo …")
-    res = client.chat.completions.create(
-        model=model,
-        messages=[
+    print("Generating summary ...")
+    req: Dict[str, Any] = {
+        "model": model,
+        "messages": [
             {"role": "system", "content": system_msg},
             {"role": "user", "content": instructions},
             {"role": "user", "content": user_msg},
         ],
-        temperature=temper,
-        max_completion_tokens=10000,
-    )
+        "max_completion_tokens": 10000,
+    }
+    # GPT-5 chat models currently only accept their default temperature.
+    if not model.startswith("gpt-5"):
+        req["temperature"] = 0.0
+
+    res = client.chat.completions.create(**req)
     return res.choices[0].message.content.strip()
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -343,7 +347,7 @@ docx_path: str, *, mode: str, summarize_model: str, timeout_s: float
         new_doc.add_paragraph(p.text)
     new_doc.save(tmp_out)
     shutil.move(tmp_out, src)        # overwrite atomically
-    print(f"📄 Summary inserted: {src.absolute()}")
+    print(f"Summary inserted: {src.absolute()}")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Orchestrator
@@ -355,7 +359,7 @@ input_path: str, *, stt_model: str, summarize_model: str, mode: str,
     load_dotenv()
     src = Path(input_path)
     if not src.exists():
-        sys.exit(f"❌ File not found: {src}")
+        sys.exit(f"File not found: {src}")
 
     transcripts_dir = Path("./data/transcripts")
     audio_dir = Path("./data/audio_files")
@@ -364,10 +368,14 @@ input_path: str, *, stt_model: str, summarize_model: str, mode: str,
 
     dst_docx = transcripts_dir / src.with_suffix(".docx").name
     if src.suffix.lower() != ".wav":             # archive original media
+        archive_target = audio_dir / src.name
         try:
-            shutil.copy2(src, audio_dir / src.name)
+            if src.resolve() == archive_target.resolve():
+                print("Source file is already in data/audio_files; skipping archive copy.")
+            else:
+                shutil.copy2(src, archive_target)
         except Exception as e:
-            print(f"⚠️  Unable to archive original media: {e}")
+            print(f"WARNING Unable to archive original media: {e}")
 
     with tempfile.TemporaryDirectory() as td:
         td_path = Path(td)
@@ -378,7 +386,7 @@ input_path: str, *, stt_model: str, summarize_model: str, mode: str,
         plain_parts, timestamped_lines = [], []
         time_offset = 0.0
         for idx, cp in enumerate(chunks, 1):
-            print(f"— Chunk {idx}/{len(chunks)} ({cp.stat().st_size/1_048_576:.1f} MB)")
+            print(f"- Chunk {idx}/{len(chunks)} ({cp.stat().st_size/1_048_576:.1f} MB)")
             stt = transcribe_chunk(cp, model=stt_model,
                                    timeout_s=timeout_s, max_retries=max_retries)
             plain_parts.append(stt["text"])
@@ -387,6 +395,8 @@ input_path: str, *, stt_model: str, summarize_model: str, mode: str,
                 timestamped_lines += paragraphs_from_segments(segs, time_offset=time_offset)
                 time_offset += segs[-1].get("end", 0.0)
             else:
+                # Coarse fallback timestamp: one marker per chunk when segment
+                # timestamps are unavailable (e.g., gpt-4o-transcribe JSON mode).
                 timestamped_lines.append(f"[{format_timestamp(time_offset)}] {stt['text'].strip()}")
                 time_offset += cp.stat().st_size / _BYTES_PER_SEC
 
@@ -396,27 +406,27 @@ input_path: str, *, stt_model: str, summarize_model: str, mode: str,
         if include_summary else None
     )
     save_docx(transcript_txt, summary_txt, dst_docx)
-    print(f"📄 Transcript saved: {dst_docx.absolute()}")
+    print(f"Transcript saved: {dst_docx.absolute()}")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # CLI
 # ──────────────────────────────────────────────────────────────────────────────
 def parse_args():
-    p = argparse.ArgumentParser(description="Audio / video → DOCX (or DOCX → add summary)")
+    p = argparse.ArgumentParser(description="Audio / video -> DOCX (or DOCX -> add summary)")
     p.add_argument("input_file", help="Input media or DOCX file")
     p.add_argument("--task", choices=["full", "transcript", "summarize"],
                    default="full",
-                   help="full (default): summary+transcript | "
-                        "transcript: transcript‑only | summarize: add summary to DOCX")
-    p.add_argument("--model", default="whisper-1",
-                   help="STT model (for audio tasks, default: whisper-1)")
-    p.add_argument("--summarize-model", default="o4-mini",
-                   help="Summarization model (default: o4-mini)")
+                   help="full (default): summary+transcript | "
+                        "transcript: transcript-only | summarize: add summary to DOCX")
+    p.add_argument("--model", default="gpt-4o-transcribe",
+                   help="STT model (for audio tasks, default: gpt-4o-transcribe)")
+    p.add_argument("--summarize-model", default="gpt-5-mini",
+                   help="Summarization model (default: gpt-5-mini; high-quality option: gpt-5.2)")
     p.add_argument("--format", choices=["meeting", "lecture", "qa"],
                    default="meeting",
                    help="Summary style (meeting, lecture, qa)")
     p.add_argument("--timeout", type=float, default=60,
-                   help="Per‑request timeout (s)")
+                   help="Per-request timeout (s)")
     p.add_argument("--max-retries", type=int, default=4,
                    help="Retries on transient errors")
     return p.parse_args()
